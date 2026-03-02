@@ -21,7 +21,11 @@ juce_add_plugin(Reticle
 target_sources(Reticle
     PRIVATE
         Source/PluginProcessor.cpp
-        Source/PluginEditor.cpp)
+        Source/PluginEditor.cpp
+        Source/NeomorphicLookAndFeel.h
+        Source/Meters/LevelMeter.h
+        Source/Meters/SpectrumAnalyzer.h
+        Source/Meters/LufsMeter.h)
 
 target_compile_definitions(Reticle
     PUBLIC

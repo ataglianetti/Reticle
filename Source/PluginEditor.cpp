@@ -4,51 +4,93 @@ ReticleEditor::ReticleEditor(ReticleProcessor& p)
     : AudioProcessorEditor(&p), processor(p)
 {
     setLookAndFeel(&neoLnf);
-    setSize(kDefaultW, kDefaultH);
-    setResizable(true, true);
-    setResizeLimits(280, 360, 1200, 900);
 
-    // Settings toggle button
-    settingsToggle.setButtonText("TUNE");
+    // Create meter modules
+    meters.push_back({ "Level",    std::make_unique<LevelMeter>(p),       true, 140 });
+    meters.push_back({ "Spectrum", std::make_unique<SpectrumAnalyzer>(p), true, 280 });
+    meters.push_back({ "LUFS",    std::make_unique<LufsMeter>(p),        true, 180 });
+
+    for (auto& slot : meters)
+        addAndMakeVisible(slot.component.get());
+
+    // Module toggles
+    setupToggle(levelToggle, 0);
+    setupToggle(specToggle,  1);
+    setupToggle(lufsToggle,  2);
+
+    // Settings toggle
     settingsToggle.setColour(juce::TextButton::buttonColourId, Neo::surface);
     settingsToggle.setColour(juce::TextButton::textColourOffId, Neo::textDim);
     settingsToggle.onClick = [this]
     {
         settingsOpen = !settingsOpen;
-        int newW = settingsOpen ? getWidth() + kSettingsPanelW : getWidth() - kSettingsPanelW;
-        setSize(juce::jmax(280, newW), getHeight());
-        resized();
-        repaint();
+        updateToggleAppearance(settingsToggle, settingsOpen);
+        recalcWindowSize();
     };
     addAndMakeVisible(settingsToggle);
 
-    // Tunable sliders
-    setupSlider(attackSlider,   attackLabel,   "Attack",     0.01, 1.0,  p.attackCoeff.load(),  0.01);
-    setupSlider(decaySlider,    decayLabel,    "Decay",      0.80, 0.999, p.decayCoeff.load(),  0.001);
-    setupSlider(peakHoldSlider, peakHoldLabel, "Peak Hold",  0.0,  5.0,  p.peakHoldSec.load(),  0.1);
-    setupSlider(dbFloorSlider,  dbFloorLabel,  "dB Floor",  -96.0, -24.0, p.dbFloor.load(),     1.0);
-    setupSlider(fpsSlider,      fpsLabel,      "FPS",        15.0, 60.0, (double)p.refreshRate.load(), 1.0);
+    // Settings sliders
+    setupSlider(attackSlider,   attackLabel,   "Attack",     0.01, 1.0,   p.attackCoeff.load(),  0.01);
+    setupSlider(decaySlider,    decayLabel,    "Decay",      0.80, 0.999, p.decayCoeff.load(),   0.001);
+    setupSlider(peakHoldSlider, peakHoldLabel, "Peak Hold",  0.0,  5.0,   p.peakHoldSec.load(),  0.1);
+    setupSlider(dbFloorSlider,  dbFloorLabel,  "dB Floor",  -96.0, -24.0, p.dbFloor.load(),      1.0);
+    setupSlider(fpsSlider,      fpsLabel,      "FPS",        15.0, 60.0,  (double)p.refreshRate.load(), 1.0);
 
-    // Sync slider changes back to processor
     attackSlider.onValueChange   = [this] { processor.attackCoeff.store((float)attackSlider.getValue()); };
     decaySlider.onValueChange    = [this] { processor.decayCoeff.store((float)decaySlider.getValue()); };
     peakHoldSlider.onValueChange = [this] { processor.peakHoldSec.store((float)peakHoldSlider.getValue()); };
-    dbFloorSlider.onValueChange  = [this] { processor.dbFloor.store((float)dbFloorSlider.getValue()); repaint(); };
-    fpsSlider.onValueChange      = [this]
-    {
-        int fps = (int)fpsSlider.getValue();
-        processor.refreshRate.store(fps);
-        stopTimer();
-        startTimerHz(fps);
-    };
+    dbFloorSlider.onValueChange  = [this] { processor.dbFloor.store((float)dbFloorSlider.getValue()); };
+    fpsSlider.onValueChange      = [this] { processor.refreshRate.store((int)fpsSlider.getValue()); };
 
-    startTimerHz(p.refreshRate.load());
+    // Initial size
+    recalcWindowSize();
+    setResizable(true, true);
+    setResizeLimits(200, 300, 1600, 1000);
 }
 
 ReticleEditor::~ReticleEditor()
 {
-    stopTimer();
     setLookAndFeel(nullptr);
+}
+
+void ReticleEditor::setupToggle(juce::TextButton& btn, int meterIndex)
+{
+    btn.setColour(juce::TextButton::buttonColourId, Neo::accent.withAlpha(0.3f));
+    btn.setColour(juce::TextButton::textColourOffId, Neo::text);
+    btn.onClick = [this, meterIndex, &btn]
+    {
+        auto& slot = meters[(size_t)meterIndex];
+        slot.visible = !slot.visible;
+        slot.component->setVisible(slot.visible);
+        updateToggleAppearance(btn, slot.visible);
+        recalcWindowSize();
+    };
+    addAndMakeVisible(btn);
+    updateToggleAppearance(btn, meters[(size_t)meterIndex].visible);
+}
+
+void ReticleEditor::updateToggleAppearance(juce::TextButton& btn, bool active)
+{
+    btn.setColour(juce::TextButton::buttonColourId,
+                  active ? Neo::accent.withAlpha(0.3f) : Neo::surface);
+    btn.setColour(juce::TextButton::textColourOffId,
+                  active ? Neo::text : Neo::textDim.withAlpha(0.5f));
+}
+
+void ReticleEditor::recalcWindowSize()
+{
+    int totalW = 0;
+    for (auto& slot : meters)
+    {
+        if (slot.visible)
+            totalW += slot.preferredWidth;
+    }
+
+    if (totalW == 0) totalW = 200; // minimum if all hidden
+    if (settingsOpen) totalW += kSettingsPanelW;
+
+    totalW = juce::jmax(280, totalW + 16); // padding
+    setSize(totalW, kDefaultH);
 }
 
 void ReticleEditor::setupSlider(juce::Slider& slider, juce::Label& label,
@@ -71,58 +113,8 @@ void ReticleEditor::setupSlider(juce::Slider& slider, juce::Label& label,
     addChildComponent(label);
 }
 
-void ReticleEditor::timerCallback()
-{
-    float attack = processor.attackCoeff.load();
-    float decay  = processor.decayCoeff.load();
-    float holdSec = processor.peakHoldSec.load();
-    int fps = processor.refreshRate.load();
-    int holdFrames = (int)(holdSec * (float)fps);
-
-    float peakL = processor.peakLevelL.load();
-    float peakR = processor.peakLevelR.load();
-    float rmsL  = processor.rmsLevelL.load();
-    float rmsR  = processor.rmsLevelR.load();
-
-    // Smoothing: fast attack, configurable decay
-    auto smooth = [&](float raw, float& smoothed)
-    {
-        if (raw > smoothed)
-            smoothed = smoothed + attack * (raw - smoothed);
-        else
-            smoothed = smoothed * decay;
-    };
-
-    smooth(peakL, smoothedPeakL);
-    smooth(peakR, smoothedPeakR);
-    smooth(rmsL,  smoothedRmsL);
-    smooth(rmsR,  smoothedRmsR);
-
-    // Peak hold
-    auto updateHold = [&](float peak, float& hold, int& counter)
-    {
-        if (peak >= hold)
-        {
-            hold = peak;
-            counter = holdFrames;
-        }
-        else if (counter > 0)
-            counter--;
-        else
-            hold = hold * decay;
-    };
-
-    updateHold(smoothedPeakL, peakHoldL, peakHoldCountL);
-    updateHold(smoothedPeakR, peakHoldR, peakHoldCountR);
-
-    repaint();
-}
-
-// ---- Drawing ----
-
 void ReticleEditor::paint(juce::Graphics& g)
 {
-    // Background
     g.fillAll(Neo::bg);
 
     // Header
@@ -134,168 +126,36 @@ void ReticleEditor::paint(juce::Graphics& g)
         g.fillRect(headerBounds);
 
         g.setColour(Neo::text);
-        g.setFont(juce::FontOptions(16.0f));
-        g.drawText("RETICLE", headerBounds.reduced(16.0f, 0), juce::Justification::centredLeft, true);
+        g.setFont(juce::FontOptions(15.0f));
+        g.drawText("RETICLE", headerBounds.reduced(14.0f, 0).removeFromLeft(80.0f),
+                   juce::Justification::centredLeft, true);
 
-        // Subtle separator
+        // Separator
         g.setColour(Neo::shadowDk);
         g.fillRect(headerBounds.getX(), headerBounds.getBottom() - 1.0f,
                    headerBounds.getWidth(), 1.0f);
     }
 
-    // Meter module area
-    auto body = getLocalBounds().withTrimmedTop(kHeaderH).toFloat();
-
+    // Settings panel background
     if (settingsOpen)
     {
+        auto body = getLocalBounds().withTrimmedTop(kHeaderH).toFloat();
         auto settingsBounds = body.removeFromRight((float)kSettingsPanelW);
         drawSettingsPanel(g, settingsBounds);
-    }
-
-    drawMeterModule(g, body);
-}
-
-void ReticleEditor::drawMeterModule(juce::Graphics& g, juce::Rectangle<float> area)
-{
-    auto bounds = area.reduced(12.0f);
-
-    // Raised panel
-    Neo::drawRaised(g, bounds, Neo::cornerRadius);
-
-    auto inner = bounds.reduced(14.0f);
-    float meterW = (inner.getWidth() - 30.0f) / 2.0f; // two meters + scale in middle
-
-    auto leftBounds  = inner.removeFromLeft(meterW);
-    auto scaleBounds = inner.removeFromLeft(30.0f);
-    auto rightBounds = inner;
-
-    drawMeterBar(g, leftBounds,  smoothedPeakL, smoothedRmsL, peakHoldL, "L");
-    drawDbScale(g, scaleBounds);
-    drawMeterBar(g, rightBounds, smoothedPeakR, smoothedRmsR, peakHoldR, "R");
-}
-
-void ReticleEditor::drawMeterBar(juce::Graphics& g, juce::Rectangle<float> bounds,
-                                 float peak, float rms, float peakHold,
-                                 const juce::String& label)
-{
-    float floor = processor.dbFloor.load();
-
-    // Channel label at top
-    g.setColour(Neo::text);
-    g.setFont(juce::FontOptions(13.0f));
-    auto labelArea = bounds.removeFromTop(20.0f);
-    g.drawText(label, labelArea, juce::Justification::centred, true);
-    bounds.removeFromTop(4.0f);
-
-    // dB readout at bottom
-    float peakDb = juce::Decibels::gainToDecibels(peak, floor);
-    auto readoutArea = bounds.removeFromBottom(18.0f);
-    g.setColour(peakDb > -6.0f ? Neo::yellow : Neo::textDim);
-    g.setFont(juce::FontOptions(11.0f));
-    g.drawText(juce::String(peakDb, 1) + " dB", readoutArea, juce::Justification::centred, true);
-    bounds.removeFromBottom(4.0f);
-
-    // Meter well (inset)
-    Neo::drawInset(g, bounds, 6.0f);
-
-    auto meterArea = bounds.reduced(3.0f);
-    float meterH = meterArea.getHeight();
-
-    // Normalize values
-    auto normDb = [&](float gain) -> float
-    {
-        float db = juce::Decibels::gainToDecibels(gain, floor);
-        return juce::jmap(db, floor, 0.0f, 0.0f, 1.0f);
-    };
-
-    float rmsNorm  = normDb(rms);
-    float peakNorm = normDb(peak);
-    float holdNorm = normDb(peakHold);
-
-    // RMS bar — gradient fill
-    float rmsH = meterH * rmsNorm;
-    if (rmsH > 0.5f)
-    {
-        auto rmsBounds = juce::Rectangle<float>(
-            meterArea.getX(), meterArea.getBottom() - rmsH,
-            meterArea.getWidth(), rmsH);
-
-        juce::ColourGradient rmsGrad(Neo::green, rmsBounds.getBottomLeft(),
-                                     Neo::yellow, rmsBounds.getTopLeft(), false);
-        if (rmsNorm > 0.7f)
-            rmsGrad.addColour(0.85, Neo::red.withAlpha(0.8f));
-        g.setGradientFill(rmsGrad);
-        g.fillRoundedRectangle(rmsBounds, 3.0f);
-
-        // Soft glow on RMS
-        g.setColour(Neo::green.withAlpha(0.08f));
-        g.fillRoundedRectangle(rmsBounds.expanded(2.0f), 4.0f);
-    }
-
-    // Peak bar — narrow center overlay
-    float peakH = meterH * peakNorm;
-    if (peakH > 0.5f)
-    {
-        float peakW = juce::jmax(4.0f, meterArea.getWidth() * 0.15f);
-        auto peakBounds = juce::Rectangle<float>(
-            meterArea.getCentreX() - peakW * 0.5f,
-            meterArea.getBottom() - peakH,
-            peakW, peakH);
-
-        auto peakCol = peakNorm > 0.9f ? Neo::red : peakNorm > 0.7f ? Neo::yellow : Neo::green.brighter(0.3f);
-        g.setColour(peakCol.withAlpha(0.9f));
-        g.fillRoundedRectangle(peakBounds, 2.0f);
-    }
-
-    // Peak hold indicator — horizontal line
-    if (holdNorm > 0.01f)
-    {
-        float holdY = meterArea.getBottom() - meterH * holdNorm;
-        auto holdCol = holdNorm > 0.9f ? Neo::red : holdNorm > 0.7f ? Neo::yellow : Neo::accent;
-        g.setColour(holdCol.withAlpha(0.85f));
-        g.fillRect(meterArea.getX() + 2.0f, holdY - 1.0f, meterArea.getWidth() - 4.0f, 2.0f);
-    }
-}
-
-void ReticleEditor::drawDbScale(juce::Graphics& g, juce::Rectangle<float> bounds)
-{
-    float floor = processor.dbFloor.load();
-    auto scaleArea = bounds.withTrimmedTop(24.0f).withTrimmedBottom(22.0f);
-    float h = scaleArea.getHeight();
-
-    g.setFont(juce::FontOptions(9.0f));
-
-    for (float db : { 0.0f, -3.0f, -6.0f, -12.0f, -18.0f, -24.0f, -36.0f, -48.0f, -60.0f, -96.0f })
-    {
-        if (db < floor) continue;
-        float norm = juce::jmap(db, floor, 0.0f, 0.0f, 1.0f);
-        float y = scaleArea.getBottom() - h * norm;
-
-        g.setColour(Neo::shadowDk.withAlpha(0.3f));
-        g.fillRect(scaleArea.getX(), y, scaleArea.getWidth(), 0.5f);
-
-        g.setColour(Neo::textDim);
-        g.drawText(juce::String((int)db),
-                   (int)scaleArea.getX(), (int)(y - 6), (int)scaleArea.getWidth(), 12,
-                   juce::Justification::centred, true);
     }
 }
 
 void ReticleEditor::drawSettingsPanel(juce::Graphics& g, juce::Rectangle<float> bounds)
 {
-    // Separator line
     g.setColour(Neo::shadowDk);
     g.fillRect(bounds.getX(), bounds.getY(), 1.0f, bounds.getHeight());
 
-    // Panel background
-    auto panelBg = bounds.withTrimmedLeft(1.0f);
     g.setColour(Neo::bgDark);
-    g.fillRect(panelBg);
+    g.fillRect(bounds.withTrimmedLeft(1.0f));
 
-    // Panel title
     g.setColour(Neo::textDim);
-    g.setFont(juce::FontOptions(11.0f));
-    g.drawText("TUNING", panelBg.removeFromTop(30.0f).reduced(12.0f, 0),
+    g.setFont(juce::FontOptions(10.0f));
+    g.drawText("TUNING", bounds.removeFromTop(28.0f).reduced(12.0f, 0),
                juce::Justification::centredLeft, true);
 }
 
@@ -304,44 +164,80 @@ void ReticleEditor::resized()
     auto area = getLocalBounds();
     auto header = area.removeFromTop(kHeaderH);
 
-    // Settings toggle in header
-    settingsToggle.setBounds(header.removeFromRight(60).reduced(8, 8));
+    // Header buttons — right side
+    auto btnArea = header.reduced(0, 8).withTrimmedLeft(100);
+    int btnW = 48;
+    int btnGap = 4;
 
+    // Right-align: TUNE button at far right
+    settingsToggle.setBounds(btnArea.removeFromRight(btnW).reduced(0, 0));
+    btnArea.removeFromRight(btnGap + 8); // extra gap before TUNE
+
+    // Module toggles
+    lufsToggle.setBounds(btnArea.removeFromRight(btnW));
+    btnArea.removeFromRight(btnGap);
+    specToggle.setBounds(btnArea.removeFromRight(btnW));
+    btnArea.removeFromRight(btnGap);
+    levelToggle.setBounds(btnArea.removeFromRight(btnW));
+
+    // Body area
+    auto body = area;
+
+    // Settings panel sliders
     if (settingsOpen)
     {
-        auto panel = area.removeFromRight(kSettingsPanelW);
-        panel.removeFromTop(32); // below "TUNING" title
+        auto panel = body.removeFromRight(kSettingsPanelW);
+        panel.removeFromTop(30);
         panel = panel.reduced(12, 0);
 
         struct SliderRow { juce::Slider& s; juce::Label& l; };
         SliderRow rows[] = {
-            { attackSlider,   attackLabel },
-            { decaySlider,    decayLabel },
-            { peakHoldSlider, peakHoldLabel },
-            { dbFloorSlider,  dbFloorLabel },
-            { fpsSlider,      fpsLabel }
+            { attackSlider, attackLabel }, { decaySlider, decayLabel },
+            { peakHoldSlider, peakHoldLabel }, { dbFloorSlider, dbFloorLabel },
+            { fpsSlider, fpsLabel }
         };
-
         for (auto& row : rows)
         {
-            auto labelBounds = panel.removeFromTop(16);
-            row.l.setBounds(labelBounds);
+            row.l.setBounds(panel.removeFromTop(16));
             row.l.setVisible(true);
-
-            auto sliderBounds = panel.removeFromTop(28);
-            row.s.setBounds(sliderBounds);
+            row.s.setBounds(panel.removeFromTop(28));
             row.s.setVisible(true);
-
-            panel.removeFromTop(8); // spacing
+            panel.removeFromTop(8);
         }
     }
     else
     {
-        // Hide all settings controls
         attackSlider.setVisible(false);   attackLabel.setVisible(false);
         decaySlider.setVisible(false);    decayLabel.setVisible(false);
         peakHoldSlider.setVisible(false); peakHoldLabel.setVisible(false);
         dbFloorSlider.setVisible(false);  dbFloorLabel.setVisible(false);
         fpsSlider.setVisible(false);      fpsLabel.setVisible(false);
+    }
+
+    // Layout visible meters into body
+    int visibleCount = 0;
+    int totalPreferred = 0;
+    for (auto& slot : meters)
+    {
+        if (slot.visible) { visibleCount++; totalPreferred += slot.preferredWidth; }
+    }
+
+    if (visibleCount > 0)
+    {
+        float availW = (float)body.getWidth();
+        for (auto& slot : meters)
+        {
+            if (!slot.visible)
+            {
+                slot.component->setBounds(0, 0, 0, 0);
+                continue;
+            }
+
+            // Distribute proportionally based on preferred widths
+            float proportion = (float)slot.preferredWidth / (float)totalPreferred;
+            int w = juce::jmax(kModuleMinW, (int)(availW * proportion));
+            auto moduleBounds = body.removeFromLeft(w);
+            slot.component->setBounds(moduleBounds);
+        }
     }
 }

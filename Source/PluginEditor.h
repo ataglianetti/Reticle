@@ -2,10 +2,14 @@
 
 #include "PluginProcessor.h"
 #include "NeomorphicLookAndFeel.h"
+#include "Meters/LevelMeter.h"
+#include "Meters/SpectrumAnalyzer.h"
+#include "Meters/LufsMeter.h"
 #include <juce_gui_extra/juce_gui_extra.h>
+#include <memory>
+#include <vector>
 
-class ReticleEditor : public juce::AudioProcessorEditor,
-                      private juce::Timer
+class ReticleEditor : public juce::AudioProcessorEditor
 {
 public:
     explicit ReticleEditor(ReticleProcessor&);
@@ -15,40 +19,43 @@ public:
     void resized() override;
 
 private:
-    void timerCallback() override;
-
-    // Drawing
-    void drawMeterModule(juce::Graphics& g, juce::Rectangle<float> bounds);
-    void drawMeterBar(juce::Graphics& g, juce::Rectangle<float> bounds,
-                      float peak, float rms, float peakHold, const juce::String& label);
-    void drawDbScale(juce::Graphics& g, juce::Rectangle<float> bounds);
-    void drawSettingsPanel(juce::Graphics& g, juce::Rectangle<float> bounds);
-
-    // Layout
+    // Layout constants
     static constexpr int kHeaderH       = 44;
     static constexpr int kSettingsPanelW = 200;
-    static constexpr int kMeterMinW     = 120;
-    static constexpr int kDefaultW      = 360;
-    static constexpr int kDefaultH      = 480;
+    static constexpr int kModuleMinW    = 140;
+    static constexpr int kDefaultH      = 500;
 
     ReticleProcessor& processor;
     NeomorphicLookAndFeel neoLnf;
 
-    // Smoothed meter values
-    float smoothedPeakL = 0.0f, smoothedPeakR = 0.0f;
-    float smoothedRmsL  = 0.0f, smoothedRmsR  = 0.0f;
-    float peakHoldL     = 0.0f, peakHoldR     = 0.0f;
-    int   peakHoldCountL = 0,   peakHoldCountR = 0;
+    // Meter modules
+    struct MeterSlot
+    {
+        juce::String name;
+        std::unique_ptr<juce::Component> component;
+        bool visible = true;
+        int preferredWidth = 160; // hint, layout can override
+    };
+    std::vector<MeterSlot> meters;
+
+    // Module toggle buttons (in header)
+    juce::TextButton levelToggle  { "LVL" };
+    juce::TextButton specToggle   { "SPEC" };
+    juce::TextButton lufsToggle   { "LUFS" };
+    juce::TextButton settingsToggle { "TUNE" };
+
+    void setupToggle(juce::TextButton& btn, int meterIndex);
+    void updateToggleAppearance(juce::TextButton& btn, bool active);
+    void recalcWindowSize();
 
     // Settings panel
     bool settingsOpen = false;
-    juce::TextButton settingsToggle;
-
     juce::Slider attackSlider, decaySlider, peakHoldSlider, dbFloorSlider, fpsSlider;
     juce::Label  attackLabel,  decayLabel,  peakHoldLabel,  dbFloorLabel,  fpsLabel;
 
     void setupSlider(juce::Slider&, juce::Label&, const juce::String& name,
                      double min, double max, double val, double step = 0.01);
+    void drawSettingsPanel(juce::Graphics& g, juce::Rectangle<float> bounds);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ReticleEditor)
 };
